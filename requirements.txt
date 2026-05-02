@@ -3,4 +3,5 @@ pandas
 Pillow
 opencv-python-headless
 openpyxl
-requests
+pytesseract
+numpy
