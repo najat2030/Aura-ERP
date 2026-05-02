@@ -1,6 +1,7 @@
 streamlit
-easyocr
 pandas
 Pillow
 opencv-python-headless
 openpyxl
+paddlepaddle==2.6.1
+paddleocr==2.7.3
