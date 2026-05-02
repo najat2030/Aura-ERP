@@ -16,7 +16,7 @@ st.markdown("""
     h1 { color: #D4AF37; font-family: 'Cairo', sans-serif; }
     .stButton>button { background-color: #006400; color: white; border-radius: 10px; }
     </style>
-    """, unsafe_allow_status_view=True)
+""", unsafe_allow_html=True)
 
 st.title("📶 اتصالات تليكوم - نظام الإدارة الذكي")
 st.write("نائبة المدير: أهلاً بكِ في لوحة التحكم الخاصة بكِ")
