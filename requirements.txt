@@ -4,5 +4,3 @@ Pillow
 opencv-python-headless
 openpyxl
 requests
-paddleocr
-paddlepaddle
