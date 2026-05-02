@@ -1,67 +1,97 @@
 import streamlit as st
 import easyocr
-import cv2
-import numpy as np
-from PIL import Image
+import sqlite3
+import pandas as pd
 import re
+from PIL import Image
+import numpy as np
 
-st.set_page_config(page_title="Aura ERP | Smart Scanner", layout="wide")
+# --- الإعدادات الفخمة ---
+st.set_page_config(page_title="Aura ERP", page_icon="📶", layout="wide")
 
+# --- قاعدة البيانات ---
+conn = sqlite3.connect('etisalat_telecom.db', check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('CREATE TABLE IF NOT EXISTS customers (national_id TEXT PRIMARY KEY, name TEXT, address TEXT, phone TEXT, network TEXT)')
+conn.commit()
+
+# --- تحميل المحرك ---
 @st.cache_resource
-def load_reader():
+def load_ocr():
     return easyocr.Reader(['ar', 'en'])
-reader = load_reader()
+reader = load_ocr()
 
-st.title("📶 Aura ERP - النظام الذكي المطور")
+if 'data' not in st.session_state:
+    st.session_state['data'] = {'name': '', 'nid': '', 'addr': ''}
 
-if 'fields' not in st.session_state:
-    st.session_state.fields = {'name': '', 'nid': '', 'addr': ''}
+col1, col2 = st.columns([1, 1], gap="large")
 
-uploaded_file = st.file_uploader("ارفع صورة البطاقة (تأكد أنها واضحة ومعتدلة)", type=['jpg', 'jpeg', 'png'])
-
-if uploaded_file:
-    # تحويل الملف لصورة OpenCV
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, 1)
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+with col1:
+    st.subheader("📸 مسح هوية العميل")
+    uploaded_file = st.file_uploader("ارفع صورة البطاقة", type=['jpg', 'png', 'jpeg'])
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.image(img_rgb, caption="البطاقة الأصلية")
-        if st.button("🚀 قنص البيانات"):
-            with st.spinner("جاري قص وتحليل البيانات..."):
-                h, w, _ = img.shape
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="البطاقة المرفوعة", width=400)
+        
+        if st.button("🚀 بدء السحب الذكي"):
+            with st.spinner('جاري تحليل البطاقة هندسياً...'):
+                img_array = np.array(image)
+                # نطلب من المحرك الإحداثيات واليقين
+                results = reader.readtext(img_array)
                 
-                # 1. منطقة الاسم (تقريباً في الربع العلوي الأيمن)
-                name_area = img[int(h*0.25):int(h*0.55), int(w*0.45):int(w*0.95)]
-                # 2. منطقة العنوان (تحت الاسم)
-                addr_area = img[int(h*0.55):int(h*0.85), int(w*0.45):int(w*0.95)]
-                # 3. منطقة الرقم القومي (الشريط السفلي)
-                nid_area = img[int(h*0.75):int(h*0.95), int(w*0.05):int(w*0.75)]
+                full_text_list = []
+                extracted_nid = ""
                 
-                # قراءة كل جزء
-                name_res = reader.readtext(name_area, detail=0)
-                addr_res = reader.readtext(addr_area, detail=0)
-                nid_res = reader.readtext(nid_area, detail=0)
-                
-                # تنقية النتائج
-                final_name = " ".join(name_res).replace("مصطفى", "").strip()
-                final_addr = " ".join(addr_res).strip()
-                
-                full_nid_text = "".join(nid_res).replace(" ", "")
-                nid_match = re.findall(r'\d{14}', full_nid_text)
-                final_nid = nid_match[0] if nid_match else ""
-                if final_nid.startswith('75'): final_nid = final_nid[::-1]
+                # الكلمات المستبعدة تماماً من الظهور في الاسم أو العنوان
+                blacklist = ['جمهورية', 'مصر', 'العربية', 'بطاقة', 'تحقيق', 'شخصية', 'الرقم', 'القومي', 'وزارة', 'الداخلية']
 
-                st.session_state.fields = {'name': final_name, 'nid': final_nid, 'addr': final_addr}
+                for (bbox, text, prob) in results:
+                    clean_text = text.strip()
+                    full_text_list.append(clean_text)
+                    
+                    # 1. البحث عن الرقم القومي (تجاهل أي رموز أو مسافات)
+                    nums_only = re.sub(r'\D', '', clean_text)
+                    if len(nums_only) == 14:
+                        extracted_nid = nums_only
+                    elif len(nums_only) > 10: # لو الرقم اتقسم لقطعتين
+                        # بنحاول نجمعه مع اللي قبله أو اللي بعده
+                        pass
+
+                # 2. منطق استخراج الاسم (الاسم عادة في النصف العلوي الأيمن)
+                # هنفلتر النصوص: لازم ميكونش فيها أرقام وميكونش في البلاك ليست
+                potential_info = [t for t in full_text_list if not any(b in t for b in blacklist) and not re.search(r'\d', t)]
+                
+                name = ""
+                address = ""
+                
+                if len(potential_info) >= 1:
+                    # الاسم في البطاقة المصرية غالباً هو أول نص بشري يظهر بعد العناوين الرسمية
+                    name = potential_info[0]
+                if len(potential_info) >= 2:
+                    # العنوان غالباً هو الكتلة النصية التي تلي الاسم
+                    address = " ".join(potential_info[1:3])
+
+                # تصحيح الرقم القومي لو اتقرأ بالمقلوب
+                if extracted_nid.startswith('75'):
+                    extracted_nid = extracted_nid[::-1]
+
+                st.session_state['data'] = {'name': name, 'nid': extracted_nid, 'addr': address}
+                st.success("✅ تمت المعالجة!")
                 st.rerun()
 
-    with col2:
-        st.subheader("📝 البيانات المستخرجة")
-        name = st.text_input("الاسم المستخرج", value=st.session_state.fields['name'])
-        nid = st.text_input("الرقم القومي", value=st.session_state.fields['nid'])
-        addr = st.text_input("العنوان المستخرج", value=st.session_state.fields['addr'])
-        
-        if st.button("💾 حفظ"):
-            st.success("تم الحفظ في قاعدة البيانات!")
+with col2:
+    st.subheader("📝 تسجيل بيانات الخط")
+    
+    name_input = st.text_input("اسم العميل بالكامل", value=st.session_state['data']['name'])
+    nid_input = st.text_input("الرقم القومي", value=st.session_state['data']['nid'])
+    addr_input = st.text_input("العنوان", value=st.session_state['data']['addr'])
+    
+    phone = st.text_input("رقم المحمول الجديد")
+    network = st.selectbox("الشبكة", ["اتصالات", "أورانج", "فودافون"])
+    
+    if st.button("💾 حفظ في النظام"):
+        cursor.execute("INSERT OR REPLACE INTO customers VALUES (?, ?, ?, ?, ?)", 
+                       (nid_input, name_input, addr_input, phone, network))
+        conn.commit()
+        st.success("تم الحفظ!")
